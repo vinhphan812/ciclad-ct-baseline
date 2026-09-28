@@ -4,22 +4,69 @@
 
 #include "ciclad_v3_impl.h"   //uint, ushort, node3, concept3, freenode3()
 #include "../utility/usage.h"  //ram-cpu usage utility (Win32 or Linux)
+#include <algorithm>  // reverse (SPMF itemset sorting)
 
 #pragma warning(disable : 4996)
 
 using namespace std;
+
+//------------------------------------------------------------------------------
+// BFS-based itemset reconstruction helpers (I/O-only: serialise fCI2 to SPMF)
+//------------------------------------------------------------------------------
+
+// Reconstruct itemset for a tree node by walking its parent chain
+static void reconstruct_itemset(const node3 *n, vector<uint> &out) {
+  out.clear();
+  const node3 *cur = n;
+  while (cur != nullptr) {
+    out.push_back(cur->key);
+    cur = cur->parent;
+  }
+  reverse(out.begin(), out.end());
+}
+
+// BFS of CI-tree to build cid -> itemset map
+static void build_cid_itemset_map(
+    const tlx::btree_map<uint, node3 *> &rootChild,
+    const vector<concept3> &fCI2,
+    tlx::btree_map<uint, vector<uint>> &cid_itemset) {
+  cid_itemset.clear();
+  queue<node3 *> q;
+  for (auto it = rootChild.begin(); it != rootChild.end(); ++it)
+    q.push(it->second);
+  while (!q.empty()) {
+    node3 *n = q.front(); q.pop();
+    vector<uint> items;
+    reconstruct_itemset(n, items);
+    if (!items.empty()) {
+      uint cid = n->Cid;
+      if (cid_itemset.find(cid) == cid_itemset.end())
+        cid_itemset[cid] = items;
+    }
+    for (auto cit = n->enfant.begin(); cit != n->enfant.end(); ++cit)
+      q.push(cit->second);
+  }
+}
+
+//------------------------------------------------------------------------------
 
 int main(int argc, char *argv[]) {
 #ifdef LINUX
   struct rusage ru;
 #endif
   short verbose = 0; short END = 0;
-  if (argc == 2) {
-    if (strcmp(argv[1], "-v") == 0) { verbose = 1; }
+  const char *export_spmf = nullptr;
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--export-spmf") == 0 && i + 1 < argc) {
+      export_spmf = argv[i + 1];
+      ++i;
+    }
+    else if (strcmp(argv[i], "-v") == 0) {
+      verbose = 1;
+    }
   }
-  else { std::cout << "verbose mode inactive." << endl; }
   clock_t start = clock(); clock_t running = clock();
-  std::vector<vector<uint>> idx(10001); //Initalisation de index inversé
+  std::vector<vector<uint>> idx(10001); //Initalisation de index inversï¿½
   for (int i = 0; i < 10001; ++i) {
     vector<uint> vc; //Reservation
     idx[i] = vc; //Affection
@@ -86,6 +133,32 @@ int main(int argc, char *argv[]) {
     }
     for (uint n = 0; n < 11; ++n) { std::cout << n << "->" << nb[n] << endl; }
   }
+
+  // SPMF export (I/O-only: observation-only serialization of mined concepts)
+  if (export_spmf != nullptr) {
+    tlx::btree_map<uint, vector<uint>> cid_itemset;
+    build_cid_itemset_map(_rootChild, fCI2, cid_itemset);
+    ofstream spmf_out(export_spmf);
+    if (spmf_out.is_open()) {
+      for (size_t i = 0; i < fCI2.size(); ++i) {
+        if (fCI2[i].deleted == 0) {
+          vector<uint> items;
+          if (i == 0) { items = fCI2[i].itemset; }
+          else { auto it = cid_itemset.find((uint)i); if (it != cid_itemset.end()) items = it->second; }
+          if (items.empty()) continue;
+          for (size_t j = 0; j < items.size(); ++j) {
+            if (j > 0) spmf_out << ' ';
+            spmf_out << (items[j] + 1);  // 0-based -> 1-based SPMF
+          }
+          spmf_out << " #SUP: " << fCI2[i].supp << "\n";
+        }
+      }
+      spmf_out.close();
+    } else {
+      cerr << "Warning: could not open SPMF export file: " << export_spmf << endl;
+    }
+  }
+
   fCI2.clear();
 #ifdef _WIN32
   pu_ram();
