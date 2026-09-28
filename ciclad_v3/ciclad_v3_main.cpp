@@ -4,6 +4,7 @@
 
 #include "ciclad_v3_impl.h"   //uint, ushort, node3, concept3, freenode3()
 #include "../utility/usage.h"  //ram-cpu usage utility (Win32 or Linux)
+#include <algorithm>
 
 #pragma warning(disable : 4996)
 
@@ -18,8 +19,12 @@ int main(int argc, char *argv[]) {
     if (strcmp(argv[1], "-v") == 0) { verbose = 1; }
   }
   else { std::cout << "verbose mode inactive." << endl; }
+  const char *export_spmf = nullptr;
+  if (argc >= 3 && strcmp(argv[2], "--export-spmf") == 0 && argc >= 4) {
+    export_spmf = argv[3];
+  }
   clock_t start = clock(); clock_t running = clock();
-  std::vector<vector<uint>> idx(10001); //Initalisation de index invers�
+  std::vector<vector<uint>> idx(10001); //Initalisation de index invers�
   for (int i = 0; i < 10001; ++i) {
     vector<uint> vc; //Reservation
     idx[i] = vc; //Affection
@@ -85,6 +90,48 @@ int main(int argc, char *argv[]) {
       }
     }
     for (uint n = 0; n < 11; ++n) { std::cout << n << "->" << nb[n] << endl; }
+  }
+  // Observation-only SPMF export using idx inversion.
+  // Do NOT modify mining state — only serialize fCI2 and idx at end of stream.
+  if (export_spmf != nullptr) {
+    ofstream spmf_out(export_spmf);
+    if (spmf_out.is_open()) {
+      // For each active concept:
+      for (size_t cid = 0; cid < fCI2.size(); ++cid) {
+        if (fCI2[cid].deleted == 1) continue;
+
+        vector<uint> items;
+        if (cid == 0) {
+          // Superconcept: use algorithm's own itemset field
+          items = fCI2[cid].itemset;
+        } else {
+          // idx inversion: item ∈ itemset(cid) iff cid ∈ idx[item]
+          // Invariant proven by Sub-Agent A for add-only execution.
+          for (size_t item = 0; item < idx.size(); ++item) {
+            for (size_t k = 0; k < idx[item].size(); ++k) {
+              if (idx[item][k] == cid) {
+                items.push_back((uint)item);
+                break;
+              }
+            }
+          }
+          // Sort for deterministic output
+          sort(items.begin(), items.end());
+        }
+
+        if (items.empty()) continue;
+
+        // SPMF format: 1-based items, space-separated, then #SUP
+        for (size_t j = 0; j < items.size(); ++j) {
+          if (j > 0) spmf_out << ' ';
+          spmf_out << (items[j] + 1);  // 0-based → 1-based
+        }
+        spmf_out << " #SUP: " << fCI2[cid].supp << "\n";
+      }
+      spmf_out.close();
+    } else {
+      cerr << "Warning: could not open SPMF export file: " << export_spmf << endl;
+    }
   }
   fCI2.clear();
 #ifdef _WIN32
