@@ -11,41 +11,58 @@
 using namespace std;
 
 //------------------------------------------------------------------------------
-// BFS-based itemset reconstruction helpers (I/O-only: serialise fCI2 to SPMF)
+// Idx-inversion itemset export (I/O-only: observation-only serialization of fCI2)
+// Safe for add-only (E1) execution — no node.parent chain traversal.
+// Invariant under E1: itemset(cid) = { item | cid ∈ idx[item] }
+//
+// Proof sketch:
+//   A. idx[idx[item][k]] = item  (idx is sound)
+//   B. No deleted entries persist in idx (no stale IDs under add-only)
+//   C. Each (cid, item) pair appears exactly once across all idx vectors (no duplicates)
+//   D. Ancestor walk: itemset(cid) = items in idx matching cid (correct for add-only)
+//
+// For add-only execution, this formula holds because:
+//   - idx[item].push_back(cid) is the only mutation adding cid to idx[item]
+//   - No path removes a cid from idx[item] without also marking it deleted
+//   - The wrapper sends only "add T" (no "del") and then "end", so cleanup() never runs
 //------------------------------------------------------------------------------
 
-// Reconstruct itemset for a tree node by walking its parent chain
-static void reconstruct_itemset(const node3 *n, vector<uint> &out) {
-  out.clear();
-  const node3 *cur = n;
-  while (cur != nullptr) {
-    out.push_back(cur->key);
-    cur = cur->parent;
+// Export all non-deleted concepts to SPMF format via idx-inversion.
+static void export_fci2_to_spmf(const char *export_spmf,
+                                  const vector<vector<uint>> &idx,
+                                  const vector<concept3> &fCI2) {
+  ofstream spmf_out(export_spmf);
+  if (!spmf_out.is_open()) {
+    cerr << "Warning: could not open SPMF export file: " << export_spmf << endl;
+    return;
   }
-  reverse(out.begin(), out.end());
-}
-
-// BFS of CI-tree to build cid -> itemset map
-static void build_cid_itemset_map(
-    const tlx::btree_map<uint, node3 *> &rootChild,
-    const vector<concept3> &fCI2,
-    tlx::btree_map<uint, vector<uint>> &cid_itemset) {
-  cid_itemset.clear();
-  queue<node3 *> q;
-  for (auto it = rootChild.begin(); it != rootChild.end(); ++it)
-    q.push(it->second);
-  while (!q.empty()) {
-    node3 *n = q.front(); q.pop();
+  for (size_t cid = 0; cid < fCI2.size(); ++cid) {
+    if (fCI2[cid].deleted == 1) continue;
     vector<uint> items;
-    reconstruct_itemset(n, items);
-    if (!items.empty()) {
-      uint cid = n->Cid;
-      if (cid_itemset.find(cid) == cid_itemset.end())
-        cid_itemset[cid] = items;
+    if (cid == 0) {
+      // Superconcept: itemset is stored directly.
+      items = fCI2[cid].itemset;
+    } else {
+      // Non-root concept: invert the idx to recover the itemset.
+      // For every item, scan idx[item] for this cid.
+      for (size_t item = 0; item < idx.size(); ++item) {
+        for (size_t k = 0; k < idx[item].size(); ++k) {
+          if (idx[item][k] == cid) {
+            items.push_back((uint)item);
+            break;  // each cid appears at most once per idx[item]
+          }
+        }
+      }
+      sort(items.begin(), items.end());
     }
-    for (auto cit = n->enfant.begin(); cit != n->enfant.end(); ++cit)
-      q.push(cit->second);
+    if (items.empty()) continue;
+    for (size_t j = 0; j < items.size(); ++j) {
+      if (j > 0) spmf_out << ' ';
+      spmf_out << (items[j] + 1);  // 0-based → 1-based SPMF
+    }
+    spmf_out << " #SUP: " << fCI2[cid].supp << "\n";
   }
+  spmf_out.close();
 }
 
 //------------------------------------------------------------------------------
@@ -134,29 +151,13 @@ int main(int argc, char *argv[]) {
     for (uint n = 0; n < 11; ++n) { std::cout << n << "->" << nb[n] << endl; }
   }
 
-  // SPMF export (I/O-only: observation-only serialization of mined concepts)
+  // SPMF export via idx-inversion (safe for add-only E1 protocol)
   if (export_spmf != nullptr) {
-    tlx::btree_map<uint, vector<uint>> cid_itemset;
-    build_cid_itemset_map(_rootChild, fCI2, cid_itemset);
-    ofstream spmf_out(export_spmf);
-    if (spmf_out.is_open()) {
-      for (size_t i = 0; i < fCI2.size(); ++i) {
-        if (fCI2[i].deleted == 0) {
-          vector<uint> items;
-          if (i == 0) { items = fCI2[i].itemset; }
-          else { auto it = cid_itemset.find((uint)i); if (it != cid_itemset.end()) items = it->second; }
-          if (items.empty()) continue;
-          for (size_t j = 0; j < items.size(); ++j) {
-            if (j > 0) spmf_out << ' ';
-            spmf_out << (items[j] + 1);  // 0-based -> 1-based SPMF
-          }
-          spmf_out << " #SUP: " << fCI2[i].supp << "\n";
-        }
-      }
-      spmf_out.close();
-    } else {
-      cerr << "Warning: could not open SPMF export file: " << export_spmf << endl;
-    }
+    std::cerr << "[DEBUG] export_spmf is set: " << export_spmf << std::endl;
+    std::cerr << "[DEBUG] fCI2.size() = " << fCI2.size() << ", idx.size() = " << idx.size() << std::endl;
+    export_fci2_to_spmf(export_spmf, idx, fCI2);
+  } else {
+    std::cerr << "[DEBUG] export_spmf is NULL" << std::endl;
   }
 
   fCI2.clear();
