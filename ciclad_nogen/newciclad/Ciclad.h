@@ -20,5 +20,5 @@
 #include <psapi.h>
 #endif
 
-uint32_t start_ciclad(char* const _fileSource, const uint32_t _windowSize, const uint32_t _maxItem);
+uint32_t start_ciclad(char* const _fileSource, const uint32_t _windowSize, const uint32_t _maxItem, const char* _spmfOutPath);
 int readfile(char *fn, std::queue<TRANSACTION> &T);

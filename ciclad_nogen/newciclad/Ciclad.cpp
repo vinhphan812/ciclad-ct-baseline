@@ -43,16 +43,23 @@ int main(int argc, char * argv[]) {
     std::cout << "nbr items " << maxItem << ", window size " << window_size << std::endl;
     const size_t windowSize = window_size;// WINDOW_SIZE;
 
-    const uint32_t nbrCI = start_ciclad(argv[1], windowSize, maxItem);
+    // --export-spmf <path>  (optional 4th + 5th argument)
+    const char* spmf_out_path = nullptr;
+    if (argc >= 5 && strcmp(argv[4], "--export-spmf") == 0 && argc >= 6) {
+        spmf_out_path = argv[5];
+        std::cout << "export-spmf: " << spmf_out_path << std::endl;
+    }
+
+    const uint32_t nbrCI = start_ciclad(argv[1], windowSize, maxItem, spmf_out_path);
   }
   else {
     test_output();
   }
-  
+
   return 0;
 }
 
-uint32_t start_ciclad(char* const _fileSource, const uint32_t _windowSize, const uint32_t _maxItem) {
+uint32_t start_ciclad(char* const _fileSource, const uint32_t _windowSize, const uint32_t _maxItem, const char* _spmfOutPath = nullptr) {
   std::queue<TRANSACTION> transactionStream, window;
   //readfile(argv[1], transactionStream);
   readfile(_fileSource, transactionStream);
@@ -159,7 +166,7 @@ uint32_t start_ciclad(char* const _fileSource, const uint32_t _windowSize, const
     std::vector<concept*> cid_list = *iter;
     for (std::vector<concept*>::iterator iter2 = cid_list.begin(); iter2 != cid_list.end(); ++iter2) {
       concept* ci = *iter2;
-      if (!ci || !ci->id) continue;
+      if (!ci || !ci->id || ci->id >= conceptContainer.size()) continue;
       if ((ref_ci = actual_itemsets.find(ci->id)) != actual_itemsets.end()) {
         actual_itemsets.at(ci->id).emplace_back(iter - index.begin());
       }
@@ -169,6 +176,31 @@ uint32_t start_ciclad(char* const _fileSource, const uint32_t _windowSize, const
         actual_itemsets.emplace(ci->id, first_item);
       }
     }
+  }
+
+  // [OBSERVER-ONLY EXPORTER] Write reconstructed itemsets to SPMF file.
+  // This is observation-only: no mining semantics are changed.
+  if (_spmfOutPath != nullptr) {
+      FILE* spmf = fopen(_spmfOutPath, "w");
+      if (spmf) {
+          for (std::map<uint32_t, std::vector<uint32_t>>::iterator iter = actual_itemsets.begin();
+               iter != actual_itemsets.end(); ++iter) {
+              uint32_t cid = iter->first;
+              vector<uint32_t> itemset = iter->second;
+              concept* ci = (cid < conceptContainer.size()) ? conceptContainer[cid] : nullptr;
+              uint32_t supp = ci ? ci->support : 0;
+              if (itemset.empty()) continue;
+              for (size_t ii = 0; ii < itemset.size(); ++ii) {
+                  if (ii > 0) fprintf(spmf, " ");
+                  fprintf(spmf, "%u", itemset[ii]);
+              }
+              fprintf(spmf, " #SUP: %u\n", supp);
+          }
+          fclose(spmf);
+          std::cout << "exported " << actual_itemsets.size() << " itemsets to " << _spmfOutPath << std::endl;
+      } else {
+          std::cerr << "cannot open export file: " << _spmfOutPath << std::endl;
+      }
   }
 
   /*for (std::map<uint32_t, std::vector<uint32_t>>::iterator iter = actual_itemsets.begin(); iter != actual_itemsets.end(); ++iter) {
@@ -215,13 +247,17 @@ int readfile(char *fn, std::queue<TRANSACTION> &T) {
     string line;
     string token;
     std::getline(inFile, line);
+    // Skip empty lines (fixes off-by-one in while(!eof()) pattern)
+    if (line.empty()) continue;
     istringstream iss(line);
     while (getline(iss, token, ' ')) {
-      items->push_back(stol(token));
+      if (token.empty()) continue;
+      items->push_back((uint32_t)strtoul(token.c_str(), nullptr, 10));
     }
+    if (items->size() <= 1) continue;  // Skip lines with no items
     TRANSACTION trx;
     trx.itemset = &(*(items->begin()));
-    *(trx.itemset) = items->size() - 1;
+    *(trx.itemset) = (uint32_t)(items->size() - 1);
     T.push(trx);
   }
   return 0;
